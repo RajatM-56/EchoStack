@@ -19,6 +19,10 @@ struct DetailView: View {
     @State private var showingStackMap = false
     @State private var showingFolderCreationSheet = false
     @State private var showingMoveSheet = false
+    @State private var showingChat = false
+    @State private var showingQuiz = false
+    @State private var showingMindMap = false
+    @State private var mindMapFileName: String? = nil
     
     // File Tracking
     @State private var customFileName = ""
@@ -102,6 +106,33 @@ struct DetailView: View {
         .sheet(isPresented: $showingStackMap) {
             stackMapSheet
         }
+        .fullScreenCover(isPresented: $showingChat) {
+            if #available(iOS 26.0, *) {
+                NavigationStack {
+                    StackChatView(stack: stack, allStacks: allStacks)
+                }
+            } else {
+                Text("Apple Intelligence requires iOS 26 or later.")
+            }
+        }
+        .fullScreenCover(isPresented: $showingQuiz) {
+            if #available(iOS 26.0, *) {
+                NavigationStack {
+                    QuizView(stack: stack, allStacks: allStacks)
+                }
+            } else {
+                Text("Apple Intelligence requires iOS 26 or later.")
+            }
+        }
+        .fullScreenCover(isPresented: $showingMindMap) {
+            NavigationStack {
+                if let fileName = mindMapFileName {
+                    AutoMindMapView(stack: stack, allStacks: allStacks, fileName: fileName)
+                } else {
+                    AutoMindMapView(stack: stack, allStacks: allStacks)
+                }
+            }
+        }
     }
 }
 
@@ -125,8 +156,22 @@ extension DetailView {
             Spacer()
             
             HStack(spacing: 16) {
-                Button(action: { showingStackMap = true }) {
-                    Image(systemName: "waveform.and.magnifyingglass")
+                // AI Tools Menu
+                Menu {
+                    Button(action: { showingChat = true }) {
+                        Label("Study Assistant", systemImage: "sparkles")
+                    }
+                    Button(action: { showingQuiz = true }) {
+                        Label("Practice Quiz", systemImage: "questionmark.text.page.fill")
+                    }
+                    Button(action: { showingStackMap = true }) {
+                        Label("Stack Map", systemImage: "waveform.and.magnifyingglass")
+                    }
+                    Button(action: { mindMapFileName = nil; showingMindMap = true }) {
+                        Label("Mind Map", systemImage: "point.3.connected.trianglepath.dotted")
+                    }
+                } label: {
+                    Image(systemName: "cpu")
                         .font(.title3)
                         .padding(10)
                         .background(stack.color.swiftUIColor.opacity(0.1))
@@ -256,6 +301,14 @@ extension DetailView {
                 .onDrop(of: [.plainText], delegate: FileDropDelegate(item: item, stack: stack, draggedItem: $draggedFileItem))
                 .contextMenu {
                     editButton(for: item, fileName: fileName)
+                    if !fileName.contains("|") {
+                        Button {
+                            mindMapFileName = fileName
+                            showingMindMap = true
+                        } label: {
+                            Label("Mind Map", systemImage: "point.3.connected.trianglepath.dotted")
+                        }
+                    }
                     deleteButton(for: item)
                 }
                 

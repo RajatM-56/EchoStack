@@ -63,16 +63,21 @@ extension AddFolderView {
                 .font(.caption2.bold())
                 .foregroundColor(.secondary)
             
-            BookFolderView(
-                title: newFolderName.isEmpty ? "New Subject" : newFolderName,
-                itemCount: 0,
-                color: selectedColor ?? Color.gray.opacity(0.3)
-            )
-            .scaleEffect(1.1)
+            HStack {
+                Spacer()
+                BookFolderView(
+                    title: newFolderName.isEmpty ? "New Subject" : newFolderName,
+                    itemCount: 0,
+                    color: selectedColor ?? Color.gray.opacity(0.3)
+                )
+                .fixedSize()
+                Spacer()
+            }
             .padding(.vertical, 10)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.vertical, 20)
+        .padding(.horizontal, 20)
         .background(
             RoundedRectangle(cornerRadius: 20)
                 .fill(Color.white)
