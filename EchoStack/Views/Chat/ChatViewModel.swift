@@ -43,6 +43,9 @@ final class ChatViewModel {
     private let stack: SubjectStack
     private let allStacks: [SubjectStack]
     
+    /// Maximum total characters to feed into the LLM session instructions.
+    private let maxTotalContext = 16000
+    
     init(stack: SubjectStack, allStacks: [SubjectStack]) {
         self.stack = stack
         self.allStacks = allStacks
@@ -71,9 +74,12 @@ final class ChatViewModel {
         var contextParts: [String] = []
         contextParts.append("Subject: \(stack.title)")
         contextParts.append("Number of items: \(stack.files.count)")
+        var currentLength = contextParts.joined(separator: "\n").count
         
         // Extract text from all files in the stack
         for item in stack.files {
+            guard currentLength < maxTotalContext else { break }
+            
             switch item {
             case .file(_, let fileName):
                 if fileName.contains("|") {
@@ -81,12 +87,18 @@ final class ChatViewModel {
                     let components = fileName.components(separatedBy: "|")
                     let displayName = components.first ?? fileName
                     let url = components.last ?? ""
-                    contextParts.append("\n--- Web Link: \(displayName) ---\nURL: \(url)")
+                    let chunk = "\n--- Web Link: \(displayName) ---\nURL: \(url)"
+                    contextParts.append(chunk)
+                    currentLength += chunk.count
                 } else {
                     // It's a file — try to extract content
-                    let fileContent = extractFileContent(fileName: fileName)
+                    let budget = maxTotalContext - currentLength
+                    guard budget > 200 else { break }
+                    let fileContent = extractFileContent(fileName: fileName, charLimit: min(5000, budget))
                     if !fileContent.isEmpty {
-                        contextParts.append("\n--- Document: \(fileName) ---\n\(fileContent)")
+                        let chunk = "\n--- Document: \(fileName) ---\n\(fileContent)"
+                        contextParts.append(chunk)
+                        currentLength += chunk.count
                     } else {
                         contextParts.append("\n--- File: \(fileName) (content could not be extracted) ---")
                     }
@@ -94,13 +106,17 @@ final class ChatViewModel {
                 
             case .folder(let subFolderID):
                 if let subStack = allStacks.first(where: { $0.id == subFolderID }) {
-                    let subContext = extractSubFolderContext(stack: subStack, depth: 1)
+                    let budget = maxTotalContext - currentLength
+                    guard budget > 200 else { break }
+                    let subContext = extractSubFolderContext(stack: subStack, depth: 1, charLimit: min(3000, budget))
                     contextParts.append(subContext)
+                    currentLength += subContext.count
                 }
             }
         }
         
-        extractedContext = contextParts.joined(separator: "\n")
+        let joined = contextParts.joined(separator: "\n")
+        extractedContext = String(joined.prefix(maxTotalContext))
         
         // Initialize the session with the grounded context
         initializeSession()
@@ -111,31 +127,39 @@ final class ChatViewModel {
         messages.append(ChatMessage(role: .assistant, content: welcomeContent))
     }
     
-    private func extractSubFolderContext(stack: SubjectStack, depth: Int) -> String {
+    private func extractSubFolderContext(stack: SubjectStack, depth: Int, charLimit: Int = 3000) -> String {
         guard depth <= 3 else { return "" }
         
         var parts: [String] = []
         let indent = String(repeating: "  ", count: depth)
         parts.append("\(indent)Sub-Folder: \(stack.title)")
+        var currentLength = parts.first!.count
         
         for item in stack.files {
+            guard currentLength < charLimit else { break }
+            
             switch item {
             case .file(_, let fileName):
                 if fileName.contains("|") {
                     let components = fileName.components(separatedBy: "|")
                     let displayName = components.first ?? fileName
                     parts.append("\(indent)  Link: \(displayName)")
+                    currentLength += displayName.count + 10
                 } else {
-                    let content = extractFileContent(fileName: fileName)
+                    let budget = charLimit - currentLength
+                    guard budget > 100 else { break }
+                    let content = extractFileContent(fileName: fileName, charLimit: min(1000, budget))
                     if !content.isEmpty {
-                        // Limit sub-folder file content to avoid blowing the context
-                        let trimmed = String(content.prefix(2000))
-                        parts.append("\(indent)  Document: \(fileName)\n\(trimmed)")
+                        let chunk = "\(indent)  Document: \(fileName)\n\(content)"
+                        parts.append(chunk)
+                        currentLength += chunk.count
                     }
                 }
             case .folder(let subID):
                 if let sub = allStacks.first(where: { $0.id == subID }) {
-                    parts.append(extractSubFolderContext(stack: sub, depth: depth + 1))
+                    let budget = charLimit - currentLength
+                    guard budget > 100 else { break }
+                    parts.append(extractSubFolderContext(stack: sub, depth: depth + 1, charLimit: min(1000, budget)))
                 }
             }
         }
@@ -145,7 +169,7 @@ final class ChatViewModel {
     
     // MARK: - File Content Extraction
     
-    private func extractFileContent(fileName: String) -> String {
+    private func extractFileContent(fileName: String, charLimit: Int = 5000) -> String {
         let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let fileURL = docsURL.appendingPathComponent(fileName)
         
@@ -155,47 +179,48 @@ final class ChatViewModel {
         
         switch ext {
         case "pdf":
-            return extractPDFText(from: fileURL)
+            return extractPDFText(from: fileURL, charLimit: charLimit)
         case "txt", "md", "rtf", "csv", "json", "xml", "html", "swift", "py", "js":
-            return extractPlainText(from: fileURL)
+            return extractPlainText(from: fileURL, charLimit: charLimit)
         case "doc", "docx":
             // Attempt attributed string extraction for doc/docx
-            return extractAttributedText(from: fileURL)
+            return extractAttributedText(from: fileURL, charLimit: charLimit)
         default:
             return ""
         }
     }
     
-    private func extractPDFText(from url: URL) -> String {
+    private func extractPDFText(from url: URL, charLimit: Int = 5000) -> String {
         guard let pdfDocument = PDFDocument(url: url) else { return "" }
         
         var fullText = ""
-        let pageLimit = min(pdfDocument.pageCount, 50) // Limit pages for context
+        let pageLimit = min(pdfDocument.pageCount, 20) // Limit pages for context
         
         for i in 0..<pageLimit {
             if let page = pdfDocument.page(at: i),
                let pageText = page.string {
                 fullText += pageText + "\n"
+                if fullText.count >= charLimit { break }
             }
         }
         
-        // Truncate to a reasonable size for the model context
-        return String(fullText.prefix(15000))
+        // Truncate to the budget
+        return String(fullText.prefix(charLimit))
     }
     
-    private func extractPlainText(from url: URL) -> String {
+    private func extractPlainText(from url: URL, charLimit: Int = 5000) -> String {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
-        return String(text.prefix(15000))
+        return String(text.prefix(charLimit))
     }
     
-    private func extractAttributedText(from url: URL) -> String {
+    private func extractAttributedText(from url: URL, charLimit: Int = 5000) -> String {
         guard let data = try? Data(contentsOf: url),
               let attributed = try? NSAttributedString(
                 data: data,
                 options: [.documentType: NSAttributedString.DocumentType.rtfd],
                 documentAttributes: nil
               ) else { return "" }
-        return String(attributed.string.prefix(15000))
+        return String(attributed.string.prefix(charLimit))
     }
     
     // MARK: - Session Management

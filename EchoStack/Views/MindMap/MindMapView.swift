@@ -1,108 +1,10 @@
 import SwiftUI
-import PDFKit
-
-
-// MARK: - Mind Map Canvas View
-
-struct MindMapCanvasView: View {
-    let nodes: [MindMapNode]
-    let edges: [MindMapEdge]
-    let accentColor: Color
-    
-    let inkColor = Color(red: 0.1, green: 0.1, blue: 0.15)
-    
-    var body: some View {
-        ZStack {
-            // Layer 1: Edges
-            Canvas { context, size in
-                let nodePositions: [UUID: CGPoint] = Dictionary(
-                    uniqueKeysWithValues: nodes.map { ($0.id, $0.position) }
-                )
-                
-                for edge in edges {
-                    guard let from = nodePositions[edge.from],
-                          let to = nodePositions[edge.to] else { continue }
-                    
-                    var path = Path()
-                    let midX = (from.x + to.x) / 2
-                    let midY = (from.y + to.y) / 2
-                    let dx = to.x - from.x
-                    let dy = to.y - from.y
-                    let controlOffset: CGFloat = min(abs(dx), abs(dy)) * 0.3
-                    let controlPoint = CGPoint(
-                        x: midX + controlOffset * (dy > 0 ? -1 : 1),
-                        y: midY + controlOffset * (dx > 0 ? 1 : -1)
-                    )
-                    
-                    path.move(to: from)
-                    path.addQuadCurve(to: to, control: controlPoint)
-                    
-                    let lineWidth = max(1, min(CGFloat(edge.weight), 3))
-                    context.stroke(
-                        path,
-                        with: .color(accentColor.opacity(0.25)),
-                        lineWidth: lineWidth
-                    )
-                }
-            }
-            
-            // Layer 2: Nodes
-            ForEach(nodes) { node in
-                NodeBubbleView(
-                    node: node,
-                    accentColor: accentColor,
-                    inkColor: inkColor,
-                    isCenter: node.id == nodes.first?.id
-                )
-                .position(node.position)
-            }
-        }
-    }
-}
-
-
-// MARK: - Node Bubble
-
-struct NodeBubbleView: View {
-    let node: MindMapNode
-    let accentColor: Color
-    let inkColor: Color
-    let isCenter: Bool
-    
-    var body: some View {
-        Text(node.title)
-            .font(.system(
-                size: isCenter ? 14 : max(10, 12 * node.relevance),
-                weight: isCenter ? .bold : .semibold,
-                design: .serif
-            ))
-            .foregroundColor(isCenter ? .white : inkColor)
-            .padding(.horizontal, isCenter ? 16 : 12)
-            .padding(.vertical, isCenter ? 10 : 7)
-            .background(
-                Group {
-                    if isCenter {
-                        Capsule()
-                            .fill(accentColor)
-                            .shadow(color: accentColor.opacity(0.3), radius: 8, y: 3)
-                    } else {
-                        Capsule()
-                            .fill(.ultraThinMaterial)
-                            .shadow(color: .black.opacity(0.06), radius: 5, y: 2)
-                            .overlay(
-                                Capsule()
-                                    .stroke(accentColor.opacity(0.2), lineWidth: 1)
-                            )
-                    }
-                }
-            )
-            .fixedSize()
-    }
-}
+import FoundationModels
 
 
 // MARK: - Auto Mind Map View
 
+@available(iOS 26.0, *)
 struct AutoMindMapView: View {
     let stack: SubjectStack
     let allStacks: [SubjectStack]
@@ -110,11 +12,11 @@ struct AutoMindMapView: View {
     
     @Environment(\.dismiss) private var dismiss
     
-    @State private var nodes: [MindMapNode] = []
-    @State private var edges: [MindMapEdge] = []
+    @State private var layoutNodes: [LayoutNode] = []
+    @State private var layoutEdges: [LayoutEdge] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
-    @State private var canvasSize: CGSize = CGSize(width: 400, height: 500)
+    @State private var canvasSize: CGSize = CGSize(width: 800, height: 600)
     
     // Zoom
     @State private var currentScale: CGFloat = 1.0
@@ -146,11 +48,9 @@ struct AutoMindMapView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // HEADER — always visible, above everything
             headerView
             Divider().background(stackColor.opacity(0.3))
             
-            // CONTENT
             ZStack {
                 paperBackground
                 
@@ -158,7 +58,7 @@ struct AutoMindMapView: View {
                     loadingView
                 } else if let error = errorMessage {
                     errorView(error)
-                } else if nodes.isEmpty {
+                } else if layoutNodes.isEmpty {
                     emptyView
                 } else {
                     mindMapContent
@@ -167,8 +67,11 @@ struct AutoMindMapView: View {
         }
         .background(paperBackground.ignoresSafeArea())
         .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
         .task { await generateMindMap() }
     }
+    
     
     // MARK: - Mind Map Content
     
@@ -176,11 +79,15 @@ struct AutoMindMapView: View {
         ZStack(alignment: .bottom) {
             ScrollView([.horizontal, .vertical], showsIndicators: false) {
                 MindMapCanvasView(
-                    nodes: nodes,
-                    edges: edges,
-                    accentColor: stackColor
+                    nodes: layoutNodes,
+                    edges: layoutEdges,
+                    accentColor: stackColor,
+                    inkColor: inkColor
                 )
-                .frame(width: canvasSize.width * currentScale, height: canvasSize.height * currentScale)
+                .frame(
+                    width: canvasSize.width * currentScale,
+                    height: canvasSize.height * currentScale
+                )
                 .scaleEffect(currentScale, anchor: .center)
                 .padding(40)
             }
@@ -188,7 +95,7 @@ struct AutoMindMapView: View {
                 MagnifyGesture()
                     .onChanged { value in
                         let newScale = lastScale * value.magnification
-                        currentScale = min(max(newScale, 0.4), 3.0)
+                        currentScale = min(max(newScale, 0.3), 3.0)
                     }
                     .onEnded { _ in
                         lastScale = currentScale
@@ -196,59 +103,64 @@ struct AutoMindMapView: View {
             )
             
             // Zoom controls
-            HStack(spacing: 12) {
-                Button {
-                    withAnimation(.spring(response: 0.3)) {
-                        currentScale = max(0.4, currentScale - 0.2)
-                        lastScale = currentScale
-                    }
-                } label: {
-                    Image(systemName: "minus.magnifyingglass")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(stackColor)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-                
-                Text("\(Int(currentScale * 100))%")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundColor(.secondary)
-                    .frame(width: 44)
-                
-                Button {
-                    withAnimation(.spring(response: 0.3)) {
-                        currentScale = min(3.0, currentScale + 0.2)
-                        lastScale = currentScale
-                    }
-                } label: {
-                    Image(systemName: "plus.magnifyingglass")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(stackColor)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-                
-                Button {
-                    withAnimation(.spring(response: 0.4)) {
-                        currentScale = 1.0
-                        lastScale = 1.0
-                    }
-                } label: {
-                    Image(systemName: "arrow.counterclockwise")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(stackColor)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-            }
-            .padding(10)
-            .background(
-                Capsule().fill(.ultraThinMaterial)
-                    .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-            )
-            .padding(.bottom, 16)
+            zoomControls
         }
     }
+    
+    private var zoomControls: some View {
+        HStack(spacing: 12) {
+            Button {
+                withAnimation(.spring(response: 0.3)) {
+                    currentScale = max(0.3, currentScale - 0.2)
+                    lastScale = currentScale
+                }
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(stackColor)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(.ultraThinMaterial))
+            }
+            
+            Text("\(Int(currentScale * 100))%")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundColor(.secondary)
+                .frame(width: 44)
+            
+            Button {
+                withAnimation(.spring(response: 0.3)) {
+                    currentScale = min(3.0, currentScale + 0.2)
+                    lastScale = currentScale
+                }
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(stackColor)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(.ultraThinMaterial))
+            }
+            
+            Button {
+                withAnimation(.spring(response: 0.4)) {
+                    currentScale = 1.0
+                    lastScale = 1.0
+                }
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(stackColor)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(.ultraThinMaterial))
+            }
+        }
+        .padding(10)
+        .background(
+            Capsule().fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        )
+        .padding(.bottom, 16)
+    }
+    
     
     // MARK: - Header
     
@@ -282,15 +194,15 @@ struct AutoMindMapView: View {
             
             Spacer()
             
-            if !nodes.isEmpty {
-                Text("\(nodes.count) topics")
+            if !layoutNodes.isEmpty {
+                let topicCount = layoutNodes.count
+                Text("\(topicCount) topics")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundColor(stackColor)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(Capsule().fill(stackColor.opacity(0.1)))
             } else {
-                // Invisible spacer to balance the header
                 Color.clear.frame(width: 70)
             }
         }
@@ -298,6 +210,7 @@ struct AutoMindMapView: View {
         .padding(.vertical, 12)
         .background(paperBackground)
     }
+    
     
     // MARK: - States
     
@@ -323,11 +236,11 @@ struct AutoMindMapView: View {
             }
             
             VStack(spacing: 8) {
-                Text("Mapping Your Knowledge")
+                Text("Building Your Mind Map")
                     .font(.system(.headline, design: .serif))
                     .foregroundColor(inkColor)
                 
-                Text("Extracting key topics and relationships...")
+                Text("Analyzing documents and organizing key concepts...")
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
             }
@@ -378,117 +291,198 @@ struct AutoMindMapView: View {
         }
     }
     
+    
     // MARK: - Generation Pipeline
     
     private func generateMindMap() async {
         isLoading = true
         errorMessage = nil
         
-        let fileContents: [(fileName: String, text: String)]
-        
-        if let fileName = singleFileName {
-            let text = extractFileContent(fileName: fileName)
-            fileContents = [(fileName: fileName, text: text)]
-        } else {
-            fileContents = extractAllFileContents()
-        }
-        
-        let allText = fileContents.map(\.text).joined(separator: "\n\n")
-        
-        guard allText.count > 50 else {
-            errorMessage = "Not enough text content to generate a mind map."
+        // 1. Check model availability
+        let model = SystemLanguageModel.default
+        guard model.availability == .available else {
+            errorMessage = "Apple Intelligence is not available on this device. Please ensure it is enabled in Settings."
             isLoading = false
             return
         }
         
-        let keywordsWithContext = MindMapEngine.extractKeywordsWithContext(
-            from: fileContents,
-            maxCount: 20
+        // 2. Extract text
+        let text = MindMapEngine.extractText(
+            from: stack,
+            allStacks: allStacks,
+            singleFileName: singleFileName
         )
         
-        guard keywordsWithContext.count >= 2 else {
-            errorMessage = "Could not extract enough distinct topics. Try adding more content."
+        guard text.count > 50 else {
+            errorMessage = "Not enough text content to generate a mind map. Add more documents."
             isLoading = false
             return
         }
         
-        let nodeCount = keywordsWithContext.count
-        let dimension = max(500, CGFloat(nodeCount) * 60)
-        canvasSize = CGSize(width: dimension, height: dimension)
-        
-        let generatedNodes = MindMapEngine.generateNodePositions(
-            from: keywordsWithContext,
-            canvasSize: canvasSize
-        )
-        
-        let generatedEdges = MindMapEngine.generateEdges(
-            keywords: keywordsWithContext.map(\.keyword),
-            text: allText,
-            nodes: generatedNodes
-        )
-        
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-            nodes = generatedNodes
-            edges = generatedEdges
+        // 3. Generate via LLM
+        do {
+            let rootTopic = try await MindMapEngine.generateMindMap(
+                rootTitle: displayTitle,
+                documentText: text
+            )
+            
+            // 4. Layout
+            let (nodes, edges, size) = MindMapEngine.layoutTree(rootTopic)
+            
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                layoutNodes = nodes
+                layoutEdges = edges
+                canvasSize = size
+                isLoading = false
+            }
+        } catch {
+            errorMessage = "Failed to generate mind map: \(error.localizedDescription)"
             isLoading = false
-        }
-    }
-    
-    // MARK: - Text Extraction
-    
-    private func extractAllFileContents() -> [(fileName: String, text: String)] {
-        var results: [(fileName: String, text: String)] = []
-        
-        for item in stack.files {
-            switch item {
-            case .file(_, let fileName):
-                if !fileName.contains("|") {
-                    let content = extractFileContent(fileName: fileName)
-                    if !content.isEmpty {
-                        results.append((fileName: fileName, text: content))
-                    }
-                }
-            case .folder(let subID):
-                if let sub = allStacks.first(where: { $0.id == subID }) {
-                    for subItem in sub.files {
-                        if case .file(_, let subFileName) = subItem, !subFileName.contains("|") {
-                            let content = extractFileContent(fileName: subFileName)
-                            if !content.isEmpty {
-                                results.append((fileName: subFileName, text: String(content.prefix(5000))))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        return results
-    }
-    
-    private func extractFileContent(fileName: String) -> String {
-        let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let fileURL = docsURL.appendingPathComponent(fileName)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return "" }
-        
-        let ext = (fileName as NSString).pathExtension.lowercased()
-        switch ext {
-        case "pdf":
-            guard let doc = PDFDocument(url: fileURL) else { return "" }
-            var text = ""
-            for i in 0..<min(doc.pageCount, 40) {
-                if let page = doc.page(at: i), let s = page.string { text += s + "\n" }
-            }
-            return String(text.prefix(20000))
-        case "txt", "md", "csv", "json", "xml", "html":
-            return (try? String(contentsOf: fileURL, encoding: .utf8)).map { String($0.prefix(20000)) } ?? ""
-        default:
-            return ""
         }
     }
 }
 
 
-// MARK: - Spin Modifier
+// MARK: - Mind Map Canvas
+
+struct MindMapCanvasView: View {
+    let nodes: [LayoutNode]
+    let edges: [LayoutEdge]
+    let accentColor: Color
+    let inkColor: Color
+    
+    var body: some View {
+        ZStack {
+            // Layer 1: Branch connections
+            Canvas { context, size in
+                let nodePositions: [UUID: LayoutNode] = Dictionary(
+                    uniqueKeysWithValues: nodes.map { ($0.id, $0) }
+                )
+                
+                for edge in edges {
+                    guard let fromNode = nodePositions[edge.fromID],
+                          let toNode = nodePositions[edge.toID] else { continue }
+                    
+                    let from = fromNode.position
+                    let to = toNode.position
+                    
+                    // Cubic Bézier — exits right side of parent, enters left side of child
+                    let startX = from.x + fromNode.size.width / 2
+                    let startY = from.y
+                    let endX = to.x - toNode.size.width / 2
+                    let endY = to.y
+                    
+                    let controlOffset = (endX - startX) * 0.5
+                    
+                    var path = Path()
+                    path.move(to: CGPoint(x: startX, y: startY))
+                    path.addCurve(
+                        to: CGPoint(x: endX, y: endY),
+                        control1: CGPoint(x: startX + controlOffset, y: startY),
+                        control2: CGPoint(x: endX - controlOffset, y: endY)
+                    )
+                    
+                    let depthOpacity = max(0.12, 0.3 - Double(edge.depth) * 0.06)
+                    let lineWidth: CGFloat = edge.depth == 1 ? 2.5 : 1.8
+                    
+                    context.stroke(
+                        path,
+                        with: .color(accentColor.opacity(depthOpacity)),
+                        lineWidth: lineWidth
+                    )
+                }
+            }
+            
+            // Layer 2: Node cards
+            ForEach(nodes) { node in
+                MindMapNodeCard(
+                    node: node,
+                    accentColor: accentColor,
+                    inkColor: inkColor
+                )
+                .position(node.position)
+            }
+        }
+    }
+}
+
+
+// MARK: - Node Card
+
+struct MindMapNodeCard: View {
+    let node: LayoutNode
+    let accentColor: Color
+    let inkColor: Color
+    
+    private var isRoot: Bool { node.depth == 0 }
+    private var isBranch: Bool { node.depth == 1 }
+    
+    private var backgroundColor: Color {
+        if isRoot { return accentColor }
+        if isBranch { return accentColor.opacity(0.1) }
+        return Color.white
+    }
+    
+    private var titleColor: Color {
+        if isRoot { return .white }
+        return inkColor
+    }
+    
+    private var summaryColor: Color {
+        if isRoot { return .white.opacity(0.85) }
+        return .secondary
+    }
+    
+    private var borderColor: Color {
+        if isRoot { return .clear }
+        if isBranch { return accentColor.opacity(0.3) }
+        return Color.black.opacity(0.06)
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(node.topic.title)
+                .font(.system(
+                    size: isRoot ? 15 : (isBranch ? 13 : 11.5),
+                    weight: isRoot ? .bold : .semibold,
+                    design: .serif
+                ))
+                .foregroundColor(titleColor)
+                .lineLimit(2)
+            
+            Text(node.topic.summary)
+                .font(.system(
+                    size: isRoot ? 11 : (isBranch ? 10.5 : 10),
+                    weight: .regular,
+                    design: .serif
+                ))
+                .foregroundColor(summaryColor)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, isRoot ? 16 : 12)
+        .padding(.vertical, isRoot ? 12 : 9)
+        .frame(width: node.size.width, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: isRoot ? 16 : 12)
+                .fill(backgroundColor)
+                .overlay(
+                    RoundedRectangle(cornerRadius: isRoot ? 16 : 12)
+                        .stroke(borderColor, lineWidth: isRoot ? 0 : 1)
+                )
+                .shadow(
+                    color: isRoot
+                        ? accentColor.opacity(0.25)
+                        : Color.black.opacity(0.05),
+                    radius: isRoot ? 10 : 5,
+                    y: isRoot ? 4 : 2
+                )
+        )
+    }
+}
+
+
+// MARK: - Spin Animation Modifier
 
 private struct MindMapSpinModifier: ViewModifier {
     @State private var rotation: Double = 0

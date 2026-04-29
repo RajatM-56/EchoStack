@@ -108,29 +108,27 @@ struct DetailView: View {
         }
         .fullScreenCover(isPresented: $showingChat) {
             if #available(iOS 26.0, *) {
-                NavigationStack {
-                    StackChatView(stack: stack, allStacks: allStacks)
-                }
+                StackChatView(stack: stack, allStacks: allStacks)
             } else {
                 Text("Apple Intelligence requires iOS 26 or later.")
             }
         }
         .fullScreenCover(isPresented: $showingQuiz) {
             if #available(iOS 26.0, *) {
-                NavigationStack {
-                    QuizView(stack: stack, allStacks: allStacks)
-                }
+                QuizView(stack: stack, allStacks: allStacks)
             } else {
                 Text("Apple Intelligence requires iOS 26 or later.")
             }
         }
         .fullScreenCover(isPresented: $showingMindMap) {
-            NavigationStack {
+            if #available(iOS 26.0, *) {
                 if let fileName = mindMapFileName {
                     AutoMindMapView(stack: stack, allStacks: allStacks, fileName: fileName)
                 } else {
                     AutoMindMapView(stack: stack, allStacks: allStacks)
                 }
+            } else {
+                Text("Apple Intelligence requires iOS 26 or later.")
             }
         }
     }

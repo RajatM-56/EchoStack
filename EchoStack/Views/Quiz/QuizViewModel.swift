@@ -222,48 +222,69 @@ final class QuizViewModel {
     
     // MARK: - Context Building
     
+    /// Maximum total characters to feed into the LLM prompt.
+    private let maxTotalContext = 12000
+    
     private func buildContext() -> String {
         var parts: [String] = []
         parts.append("Subject: \(stack.title)")
+        var currentLength = parts.first!.count
         
         for item in stack.files {
+            guard currentLength < maxTotalContext else { break }
+            
             switch item {
             case .file(_, let fileName):
                 if fileName.contains("|") {
                     let name = fileName.components(separatedBy: "|").first ?? fileName
                     parts.append("Link: \(name)")
+                    currentLength += name.count + 10
                 } else {
-                    let content = extractFileContent(fileName: fileName)
+                    let budget = maxTotalContext - currentLength
+                    guard budget > 200 else { break }
+                    let content = extractFileContent(fileName: fileName, charLimit: min(4000, budget))
                     if !content.isEmpty {
-                        parts.append("--- \(fileName) ---\n\(content)")
+                        let chunk = "--- \(fileName) ---\n\(content)"
+                        parts.append(chunk)
+                        currentLength += chunk.count
                     }
                 }
             case .folder(let subID):
                 if let sub = allStacks.first(where: { $0.id == subID }) {
-                    parts.append(buildSubContext(stack: sub, depth: 1))
+                    let budget = maxTotalContext - currentLength
+                    guard budget > 200 else { break }
+                    let subContext = buildSubContext(stack: sub, depth: 1, charLimit: min(2000, budget))
+                    parts.append(subContext)
+                    currentLength += subContext.count
                 }
             }
         }
         
-        return parts.joined(separator: "\n")
+        let joined = parts.joined(separator: "\n")
+        return String(joined.prefix(maxTotalContext))
     }
     
-    private func buildSubContext(stack: SubjectStack, depth: Int) -> String {
+    private func buildSubContext(stack: SubjectStack, depth: Int, charLimit: Int = 2000) -> String {
         guard depth <= 3 else { return "" }
         var parts: [String] = ["Sub-Folder: \(stack.title)"]
+        var currentLength = parts.first!.count
         
         for item in stack.files {
+            guard currentLength < charLimit else { break }
             if case .file(_, let fileName) = item, !fileName.contains("|") {
-                let content = extractFileContent(fileName: fileName)
+                let budget = charLimit - currentLength
+                guard budget > 100 else { break }
+                let content = extractFileContent(fileName: fileName, charLimit: min(1000, budget))
                 if !content.isEmpty {
-                    parts.append(String(content.prefix(2000)))
+                    parts.append(content)
+                    currentLength += content.count
                 }
             }
         }
         return parts.joined(separator: "\n")
     }
     
-    private func extractFileContent(fileName: String) -> String {
+    private func extractFileContent(fileName: String, charLimit: Int = 4000) -> String {
         let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let fileURL = docsURL.appendingPathComponent(fileName)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return "" }
@@ -271,20 +292,23 @@ final class QuizViewModel {
         let ext = (fileName as NSString).pathExtension.lowercased()
         switch ext {
         case "pdf":
-            return extractPDFText(from: fileURL)
+            return extractPDFText(from: fileURL, charLimit: charLimit)
         case "txt", "md", "rtf", "csv", "json", "xml", "html":
-            return (try? String(contentsOf: fileURL, encoding: .utf8)).map { String($0.prefix(12000)) } ?? ""
+            return (try? String(contentsOf: fileURL, encoding: .utf8)).map { String($0.prefix(charLimit)) } ?? ""
         default:
             return ""
         }
     }
     
-    private func extractPDFText(from url: URL) -> String {
+    private func extractPDFText(from url: URL, charLimit: Int = 4000) -> String {
         guard let doc = PDFDocument(url: url) else { return "" }
         var text = ""
-        for i in 0..<min(doc.pageCount, 40) {
-            if let page = doc.page(at: i), let s = page.string { text += s + "\n" }
+        for i in 0..<min(doc.pageCount, 15) {
+            if let page = doc.page(at: i), let s = page.string {
+                text += s + "\n"
+                if text.count >= charLimit { break }
+            }
         }
-        return String(text.prefix(12000))
+        return String(text.prefix(charLimit))
     }
 }

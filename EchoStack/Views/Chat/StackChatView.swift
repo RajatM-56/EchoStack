@@ -53,6 +53,8 @@ struct StackChatView: View {
             isInputFocused = false
         }
         .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             await viewModel.loadStackContext()
         }
